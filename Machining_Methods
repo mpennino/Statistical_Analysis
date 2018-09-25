@@ -1,0 +1,1872 @@
+---
+title: "Cluster Analysis Social Data Montgomery County"
+author: "Michael Pennino"
+date: "November 18, 2017"
+output: html_document
+---
+
+# This analysis is based on using 16th mile buffers around green infrastructure locations
+# Overall Steps for Difference-in-Difference approach
+* 1. Put 16th mile buffer around SWM2000 points and SWM2015 points using "GI_Buffer_Creation.R""
+* 2. Find random buffer circles with no GI nearby usings R script "No_GI_Buffers_Balt.R"
+* 3. Download US Census data at block group level for each county for 2000 and 2015
+* 4. Use "CENSUS_in_Buffer_Balt.R" script to calculate the census data within each treatment and control buffer
+* 5. Use "LULC_in_Buffer.R" script to calculate the NLCD land use data within each treatment and control buffer
+* 6. Use "ISC_in_Buffer.R" script to calculate the % ISC  within each treatment and control buffer
+* 7. Use this script to compile the data run the cluster analysis and difference-in-differences approach
+
+# How to Run this Analysis
+* 1. Run first code chunk to load all data (** Skip Steps 2-6 if already did this and jump to step 7. )
+* 2. Use the select data chunk to choose between GI and no GI buffers that are either separated by 1/8, 1/4 or 1/2 mile. 
+* 3. Run the manipulate data code
+* 4. Merge all datasets together
+* 5. & 6. Run these to add on all variables and save output as RDS file 
+
+
+# 1. Compiling Data
+```{r Compiling}
+library(sp)
+library(ggplot2)
+library(raster)
+library(rgdal)
+library(rgeos)
+library(maptools)
+library(foreign)
+library(spatstat)
+library(geosphere)
+
+dir = "/Users/michaelpennino/Documents/G-Drive/"
+
+#************************************************************
+# CENSUS BLOCK GROUPS
+BG00 = readOGR(paste0(dir,'/GIS/DC/Census/Montgomery_County/Census Block Groups'),
+               'MontgomeryCo_Block_Groups_2000_usgs')
+BG15 = readOGR(paste0(dir,'/GIS/DC/Census/Montgomery_County/Census Block Groups'),
+               'MontgomeryCo_Block_Groups_2015_usgs')
+
+# SWM Facility Locations
+swm05 = readOGR(paste(dir,'GIS/DC/Green_Infrastructure/By_Year/MC_SWM_2005.shp',sep=""))
+swm14 = readOGR(paste(dir,'GIS/DC/Green_Infrastructure/By_Year/MC_SWM_2014.shp',sep=""))
+
+# Add FID
+swm05$FID = seq(from=0,to=length(swm05)-1) 
+swm14$FID = seq(from=0,to=length(swm14)-1) 
+
+class(swm05)
+nrow(swm05) # 3472
+nrow(swm14) # 9055
+
+
+
+#************************************************************
+# Import GI_BUFFER 
+buff05 = readOGR(paste0(dir,'GIS/DC/Green_Infrastructure/GI_Buffer'),
+                 'MC_SWM_2005_16th_mile_buff')
+
+buff14 = readOGR(paste0(dir,'GIS/DC/Green_Infrastructure/GI_Buffer'),
+                           'MC_SWM_2014_16th_mile_buff')
+
+#************************************************************
+# Import NO_GI_BUFFER
+# Use this one for no_GI_buff separated from GI points by 1/2 mile
+
+# Use this one for no_GI_buff separated from GI points by 1/4 mile
+
+# Use this one for no_GI_buff separated from GI points by 1/8 mile
+No_GI_buff14 = readOGR(paste0(dir,'GIS/DC/Green_Infrastructure/GI_Buffer'),
+                       'No_GI_buff14_16th_mile_8thSep_Mont') 
+
+#************************************************************
+# DC City Center
+City_Center = readOGR(paste(dir,'GIS/MD/NRCS Data Gateway/Boundaries/Counties',sep=""),'Baltimore_City_Centroid')
+
+
+
+#************************************************************
+# Import angles to calculate cardinal direction for each point
+# These are produced in ArcGIS using Intercardinal Direction
+# Using the Generate Near Table tool
+
+swm05_Direction = read.dbf(paste(dir,'GIS/MD/Social Metrics/Distance_City_Center/swm05_Direction_City_Center.dbf',sep=""), as.is = FALSE)
+
+swm14_Direction = read.dbf(paste(dir,'GIS/MD/Social Metrics/Distance_City_Center/swm14_Direction_City_Center.dbf',sep=""), as.is = FALSE)
+
+No_GI00_Direction_half = read.dbf(paste(dir,'GIS/MD/Social Metrics/Distance_City_Center/No_GI00_halfSep_Direction_City_Center.dbf',sep=""), as.is = FALSE)
+
+No_GI00_Direction_8th = read.dbf(paste(dir,'GIS/MD/Social Metrics/Distance_City_Center/No_GI15_8thSep_Direction_City_Center.dbf',sep=""), as.is = FALSE)
+
+No_GI00_Direction_4th = read.dbf(paste(dir,'GIS/MD/Social Metrics/Distance_City_Center/No_GI15_4thSep_Direction_City_Center.dbf',sep=""), as.is = FALSE)
+
+
+#************************************************************
+# Import BUFFER LULC Data  
+lulc.BUFF.2000 = read.csv(paste(dir,'GIS/DC/NLCD/NLCD2001_MontCo_GI_Buffer2005.csv',sep=""))
+lulc.BUFF.2015 = read.csv(paste(dir,'GIS/DC/NLCD/NLCD2011_MontCo_GI_Buffer2014.csv',sep=""))
+
+# Import BUFFER ISC Data
+ISC.BUFF.2000 = read.csv(paste(dir,'GIS/DC/NLCD/ISC2001_MontCo_GI_Buffer2005.csv',sep=""))
+ISC.BUFF.2015 = read.csv(paste(dir,'GIS/DC/NLCD/ISC2011_MontCo_GI_Buffer2014.csv',sep=""))
+
+
+#************************************************************
+# Import CENSUS in BUFFER Data
+
+CENSUS.BUFF.2000 = read.csv(paste(dir,'GIS/DC/Census/Data/CENSUS2000_in_MontCo_GI_Buff00.csv',sep=""))
+CENSUS.BUFF.2015 = read.csv(paste(dir,'GIS/DC/Census/Data/CENSUS2015_in_MontCo_GI_Buff15.csv',sep=""))
+
+
+
+nrow(CENSUS.BUFF.2000) # 3472
+nrow(lulc.BUFF.2000) # 3472
+nrow(ISC.BUFF.2000) # 3472
+
+nrow(CENSUS.BUFF.2015) # 9055
+nrow(lulc.BUFF.2015) # 9055
+nrow(ISC.BUFF.2015) # 9055
+
+#************************************************************
+# Import NO GI Data 
+#************************************************************
+# Half Sep
+
+#*************
+# 4th Sep
+# No GI Data
+
+#*************
+# 8th Sep
+# No GI Data
+NO.GI.CENSUS.BUFF.2000.8th = read.csv(paste(dir,'GIS/DC/Census/Data/CENSUS2000_in_MontCo_NoGI_Buff14.csv',sep=""))
+
+NO.GI.ISC.BUFF.2000.8th = 
+read.csv(paste(dir,'GIS/DC/NLCD/ISC2001_MontCo_No_GI_Buffer2014_8thSep.csv',sep=""))
+
+NO.GI.lulc.BUFF.2000.8th = 
+read.csv(paste(dir,'GIS/DC/NLCD/NLCD2001_MontCo_No_GI_Buffer2014_8thSep.csv',sep=""))
+
+NO.GI.CENSUS.BUFF.2015.8th = read.csv(paste(dir,'GIS/DC/Census/Data/CENSUS2015_in_MontCo_NoGI_Buff14.csv',sep=""))
+
+NO.GI.ISC.BUFF.2015.8th = 
+read.csv(paste(dir,'GIS/DC/NLCD/ISC2011_MontCo_No_GI_Buffer2014_8thSep.csv',sep=""))
+
+NO.GI.lulc.BUFF.2015.8th = read.csv(paste(dir,'GIS/DC/NLCD/NLCD2011_MontCo_No_GI_Buffer2014_8thSep.csv',sep=""))
+
+
+
+###
+
+```
+
+
+# 2. Select Data 
+* Choosing No GI land buffers that have at least a half, 4th, or 8th mile separation between GI locations and randomly generated no GI locations
+```{r }
+#************************************************************
+# NO_GI_BUFFER
+#************************************************************
+No_GI_buff14 = No_GI_buff14  # No_GI_buff00.half or No_GI_buff00.4th or No_GI_buff00.8th
+
+# project to be same as other buffers
+No_GI_buff14 <- spTransform(No_GI_buff14, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=23 +lon_0=-96 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs +ellps=GRS80 +towgs84=0,0,0"))
+projection(buff05)
+projection(No_GI_buff14)
+No_GI_buff14$FID = seq(from=0,to=length(No_GI_buff14)-1) 
+
+
+#************************************************************
+# NO GI Data 
+#************************************************************
+NO.GI.CENSUS.BUFF.2000 = NO.GI.CENSUS.BUFF.2000.8th # or NO.GI.CENSUS.BUFF.2000.half or NO.GI.CENSUS.BUFF.2000.4th or NO.GI.CENSUS.BUFF.2000.8th ... 
+NO.GI.ISC.BUFF.2000 = NO.GI.ISC.BUFF.2000.8th
+NO.GI.lulc.BUFF.2000 = NO.GI.lulc.BUFF.2000.8th
+NO.GI.CENSUS.BUFF.2015 = NO.GI.CENSUS.BUFF.2015.8th
+NO.GI.ISC.BUFF.2015 = NO.GI.ISC.BUFF.2015.8th
+NO.GI.lulc.BUFF.2015 = NO.GI.lulc.BUFF.2015.8th
+
+#************************************************************
+# Cardinal Direction
+#************************************************************
+No_GI00_Direction = No_GI00_Direction_half # No_GI00_Direction_half or No_GI00_Direction_4th or No_GI00_Direction_8th
+
+
+
+###########################
+nrow(NO.GI.CENSUS.BUFF.2000) # 7818 1/8 Sep, 
+nrow(NO.GI.ISC.BUFF.2000) # 7818 1/8 Sep, 
+nrow(NO.GI.lulc.BUFF.2000) # 7818 1/8 Sep, 
+
+nrow(NO.GI.CENSUS.BUFF.2015) # 7818 1/8 Sep, 
+nrow(NO.GI.ISC.BUFF.2015) # 7818 1/8 Sep, 
+nrow(NO.GI.lulc.BUFF.2015) # 7818 1/8 Sep, 
+
+##
+```
+
+
+
+
+# 3. Manipulate Data
+* Make sure all datasets have same number of rows and same columns names
+```{r}
+
+# Need to remove the points in water for ISC and lulc so all have 3006 data rows
+selectedRows  = (NO.GI.ISC.BUFF.2000$ID %in% NO.GI.CENSUS.BUFF.2000$ID) # gives rows where are matching
+NO.GI.ISC.BUFF.2000 = NO.GI.ISC.BUFF.2000[selectedRows,] # this is the point buffer that is not near SWM
+nrow(NO.GI.ISC.BUFF.2000) # 7818 1/8 Sep
+
+selectedRows  = (NO.GI.lulc.BUFF.2000$ID %in% NO.GI.CENSUS.BUFF.2000$ID) # gives rows where are matching
+NO.GI.lulc.BUFF.2000 = NO.GI.lulc.BUFF.2000[selectedRows,] # this is the point buffer that is not near SWM
+nrow(NO.GI.lulc.BUFF.2000) # 7818 1/8 Sep
+
+selectedRows  = (NO.GI.ISC.BUFF.2015$ID %in% NO.GI.CENSUS.BUFF.2015$ID) # gives rows where are matching
+NO.GI.ISC.BUFF.2015 = NO.GI.ISC.BUFF.2015[selectedRows,] # this is the point buffer that is not near SWM
+nrow(NO.GI.ISC.BUFF.2015) # 7818 1/8 Sep
+
+selectedRows  = (NO.GI.lulc.BUFF.2015$ID %in% NO.GI.CENSUS.BUFF.2015$ID) # gives rows where are matching
+NO.GI.lulc.BUFF.2015 = NO.GI.lulc.BUFF.2015[selectedRows,] # this is the point buffer that is not near SWM
+nrow(NO.GI.lulc.BUFF.2015) # 7818 1/8 Sep
+
+
+#****************************************************************
+#****************************************************************
+# Remove Duplicate STRU_ID
+CENSUS.BUFF.2000$STRU_NO = round(CENSUS.BUFF.2000$STRU_NO, 0)
+CENSUS.BUFF.2000 = CENSUS.BUFF.2000[!duplicated(CENSUS.BUFF.2000$STRU_NO),] # removes duplicated rows
+
+lulc.BUFF.2000$STRU_NO = round(lulc.BUFF.2000$STRU_NO, 0)
+lulc.BUFF.2000 = lulc.BUFF.2000[!duplicated(lulc.BUFF.2000$STRU_NO),] # removes duplicated rows
+
+ISC.BUFF.2000$STRU_NO = round(ISC.BUFF.2000$STRU_NO, 0)
+ISC.BUFF.2000 = ISC.BUFF.2000[!duplicated(ISC.BUFF.2000$STRU_NO),] # removes duplicated rows
+
+CENSUS.BUFF.2015$STRU_NO = round(CENSUS.BUFF.2015$STRU_NO, 0)
+CENSUS.BUFF.2015 = CENSUS.BUFF.2015[!duplicated(CENSUS.BUFF.2015$STRU_NO),] # removes duplicated rows
+
+lulc.BUFF.2015$STRU_NO = round(lulc.BUFF.2015$STRU_NO, 0)
+lulc.BUFF.2015 = lulc.BUFF.2015[!duplicated(lulc.BUFF.2015$STRU_NO),] # removes duplicated rows
+
+ISC.BUFF.2015$STRU_NO = round(ISC.BUFF.2015$STRU_NO, 0)
+ISC.BUFF.2015 = ISC.BUFF.2015[!duplicated(ISC.BUFF.2015$STRU_NO),] # removes duplicated rows
+
+###
+
+```
+
+
+
+# 4. Merge all Data 
+* Merging Together:
+* Census data: Property Value, Income Per Capita, Total Population, Population Density, Percent Below Poverty, Percent White, Percent, Black, Percent Minority, Year Built
+* Land Use Land Cover Data: % Developed, % Forested, % Shrubland, % Agriculture, % Water, % Grassland, % Barren Land
+```{r Merging}
+#****************************************************************
+#****************************************************************
+# Merge all data frames together
+
+#****************************
+# MERGE GI Files
+COMBO_buff00 = merge(CENSUS.BUFF.2000,lulc.BUFF.2000, by="STRU_NO")
+COMBO_buff00 =  merge(COMBO_buff00,ISC.BUFF.2000, by="STRU_NO")
+nrow(COMBO_buff00) # 3472
+ncol(COMBO_buff00) # 20
+# View(COMBO_buff00)
+
+COMBO_buff15 = merge(CENSUS.BUFF.2015,lulc.BUFF.2015, by="STRU_NO")
+COMBO_buff15 =  merge(COMBO_buff15,ISC.BUFF.2015, by="STRU_NO")
+nrow(COMBO_buff15) # 9055
+ncol(COMBO_buff15) # 20
+# View(COMBO_buff15)
+
+#****************************
+# MERGE NO GI Files
+COMBO_No_GI_buff00b = merge(NO.GI.CENSUS.BUFF.2000,NO.GI.lulc.BUFF.2000, by="ID")
+COMBO_No_GI_buff00b = merge(COMBO_No_GI_buff00b,NO.GI.ISC.BUFF.2000, by="ID")
+nrow(COMBO_No_GI_buff00b) # 7818 for 1/8 Sep
+ncol(COMBO_No_GI_buff00b) # 20
+# View(COMBO_No_GI_buff00b)
+
+COMBO_No_GI_buff15b = merge(NO.GI.CENSUS.BUFF.2015,NO.GI.lulc.BUFF.2015, by="ID")
+COMBO_No_GI_buff15b = merge(COMBO_No_GI_buff15b,NO.GI.ISC.BUFF.2015, by="ID")
+nrow(COMBO_No_GI_buff15b) # 7818 for 1/8 Sep
+ncol(COMBO_No_GI_buff15b) # 20
+# View(COMBO_No_GI_buff15b)
+
+```
+
+
+# 5. Add on Other Variables for GI sites
+* Up until this step the data only contains Census and LULC data
+* Adding on: 
+* 1. Distance to City Center, 
+* 2. What quadrant the point is in based on cardinal direction from city center
+* 3. Distance to Greenspace
+* 4. Distance to Major Roads or Public Transit
+* 5. Distance to Water (river or lake)
+```{r Merge Other Variables}
+
+#*******************************************
+# DISTANCE TO CITY CENTER
+#*******************************************
+# Need to convert to decimal coordinate system
+City_Center <- spTransform(City_Center, CRS('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'))
+swm05_prj <- spTransform(swm05, CRS('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'))
+swm14_prj <- spTransform(swm14, CRS('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'))
+
+# # make point layer from No_GI_buff00
+# No_GI00 = gCentroid(No_GI_buff00,byid=TRUE) 
+# No_GI00$ID = seq.int(length(No_GI00))
+# 
+# No_GI00_prj <- spTransform(No_GI00, CRS('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'))
+
+# Use distm to calculate distance from GI points to city center
+swm05$Dist_City_Center = distm(swm05_prj, City_Center, fun = distHaversine)
+swm14$Dist_City_Center = distm(swm14_prj, City_Center, fun = distHaversine)
+# No_GI00$Dist_City_Center = distm(No_GI00_prj, City_Center, fun = distHaversine)
+
+# Merge Values onto COMBO
+COMBO_buff00 = merge(COMBO_buff00, 
+                     as.data.frame(swm05[,c("STRU_NO","Dist_City_Center")])[,1:2],
+                     by="STRU_NO",all.x=T)
+
+COMBO_buff15 = merge(COMBO_buff15,
+                     as.data.frame(swm14[,c("STRU_NO","Dist_City_Center")])[,1:2],
+                     by="STRU_NO",all.x=T)
+
+# COMBO_No_GI_buff00b = merge(COMBO_No_GI_buff00b,
+#                             as.data.frame(No_GI00[,c("ID","Dist_City_Center")])[,1:2],
+#                             by="ID",all.x=T)
+# 
+# COMBO_No_GI_buff15b = merge(COMBO_No_GI_buff15b,
+#                             as.data.frame(No_GI00[,c("ID","Dist_City_Center")])[,1:2],
+#                             by="ID",all.x=T)
+# 
+
+#*******************************************
+# FIND CITY Cardinal Direction QUADRANT
+#*******************************************
+
+#test = swm05_Direction 
+#swm05_Direction = test
+
+# NEE = 0 to 45 degrees = 3
+# NNE = 45 to 90 degrees = 4
+# NNW = 90 to 135 degrees = 5
+# NWW = 135 to 180 degrees = 6
+# SEE = 0 to -45 degrees = 2
+# SSE = 45 to -90 degrees = 1
+# SSW = -90 to -135 degrees = 8
+# SWW = -135 to -180 degrees = 7
+
+#******************************************
+# For swm05
+swm05_Direction$Card_Direct = 'NA'
+swm05_Direction$Card_Direct = 
+  ifelse(swm05_Direction$NEAR_ANGLE > 0 & swm05_Direction$NEAR_ANGLE < 45, 'NEE',
+  ifelse(swm05_Direction$NEAR_ANGLE > 45 & swm05_Direction$NEAR_ANGLE < 90, 'NNE',
+  ifelse(swm05_Direction$NEAR_ANGLE > 90 & swm05_Direction$NEAR_ANGLE < 135, 'NNW',
+  ifelse(swm05_Direction$NEAR_ANGLE > 135 & swm05_Direction$NEAR_ANGLE < 180, 'NWW',
+  ifelse(swm05_Direction$NEAR_ANGLE < 0 & swm05_Direction$NEAR_ANGLE > -45, 'SEE',
+  ifelse(swm05_Direction$NEAR_ANGLE < -45 & swm05_Direction$NEAR_ANGLE > -90, 'SSE',    ifelse(swm05_Direction$NEAR_ANGLE < -90 & swm05_Direction$NEAR_ANGLE > -135, 'SSW',
+  ifelse(swm05_Direction$NEAR_ANGLE == 0, 'NEE', 
+  ifelse(swm05_Direction$NEAR_ANGLE == 45, 'NNE',
+  ifelse(swm05_Direction$NEAR_ANGLE == 90, 'NNW',
+  ifelse(swm05_Direction$NEAR_ANGLE == 135, 'NWW',
+  ifelse(swm05_Direction$NEAR_ANGLE == 180, 'SWW',
+  ifelse(swm05_Direction$NEAR_ANGLE == -45, 'SEE',
+  ifelse(swm05_Direction$NEAR_ANGLE == -90, 'SSE',
+  ifelse(swm05_Direction$NEAR_ANGLE == -135, 'SSW','SWW')))))))))))))))
+
+# Add in number to represent each cardinal quadrant. 
+swm05_Direction$Card_Number = 0
+swm05_Direction$Card_Number =  
+  ifelse(swm05_Direction$Card_Direct == "NEE", 3,
+  ifelse(swm05_Direction$Card_Direct == "NNE", 4,
+  ifelse(swm05_Direction$Card_Direct == "NNW", 5,
+  ifelse(swm05_Direction$Card_Direct == "NWW", 6,
+  ifelse(swm05_Direction$Card_Direct == "SEE", 2,
+  ifelse(swm05_Direction$Card_Direct == "SSE", 1,
+  ifelse(swm05_Direction$Card_Direct == "SSW", 8,7)))))))
+
+#******************************************
+# For swm14
+swm14_Direction$Card_Direct = 'NA'
+swm14_Direction$Card_Direct = 
+  ifelse(swm14_Direction$NEAR_ANGLE > 0 & swm14_Direction$NEAR_ANGLE < 45, 'NEE',
+  ifelse(swm14_Direction$NEAR_ANGLE > 45 & swm14_Direction$NEAR_ANGLE < 90, 'NNE',
+  ifelse(swm14_Direction$NEAR_ANGLE > 90 & swm14_Direction$NEAR_ANGLE < 135, 'NNW',
+  ifelse(swm14_Direction$NEAR_ANGLE > 135 & swm14_Direction$NEAR_ANGLE < 180, 'NWW',
+  ifelse(swm14_Direction$NEAR_ANGLE < 0 & swm14_Direction$NEAR_ANGLE > -45, 'SEE',
+  ifelse(swm14_Direction$NEAR_ANGLE < -45 & swm14_Direction$NEAR_ANGLE > -90, 'SSE',    ifelse(swm14_Direction$NEAR_ANGLE < -90 & swm14_Direction$NEAR_ANGLE > -135, 'SSW',
+  ifelse(swm14_Direction$NEAR_ANGLE == 0, 'NEE', 
+  ifelse(swm14_Direction$NEAR_ANGLE == 45, 'NNE',
+  ifelse(swm14_Direction$NEAR_ANGLE == 90, 'NNW',
+  ifelse(swm14_Direction$NEAR_ANGLE == 135, 'NWW',
+  ifelse(swm14_Direction$NEAR_ANGLE == 180, 'SWW',
+  ifelse(swm14_Direction$NEAR_ANGLE == -45, 'SEE',
+  ifelse(swm14_Direction$NEAR_ANGLE == -90, 'SSE',
+  ifelse(swm14_Direction$NEAR_ANGLE == -135, 'SSW','SWW')))))))))))))))
+
+# Add in number to represent each cardinal quadrant. 
+swm14_Direction$Card_Number = 0
+swm14_Direction$Card_Number =  
+  ifelse(swm14_Direction$Card_Direct == "NEE", 3,
+  ifelse(swm14_Direction$Card_Direct == "NNE", 4,
+  ifelse(swm14_Direction$Card_Direct == "NNW", 5,
+  ifelse(swm14_Direction$Card_Direct == "NWW", 6,
+  ifelse(swm14_Direction$Card_Direct == "SEE", 2,
+  ifelse(swm14_Direction$Card_Direct == "SSE", 1,
+  ifelse(swm14_Direction$Card_Direct == "SSW", 8,7)))))))
+
+#******************************************
+# For No_GI00
+# No_GI00_Direction$Card_Direct = 'NA'
+# No_GI00_Direction$Card_Direct = 
+#   ifelse(No_GI00_Direction$NEAR_ANGLE > 0 & No_GI00_Direction$NEAR_ANGLE < 45, 'NEE',
+#   ifelse(No_GI00_Direction$NEAR_ANGLE > 45 & No_GI00_Direction$NEAR_ANGLE < 90, 'NNE',
+#   ifelse(No_GI00_Direction$NEAR_ANGLE > 90 & No_GI00_Direction$NEAR_ANGLE < 135, 'NNW',
+#   ifelse(No_GI00_Direction$NEAR_ANGLE > 135 & No_GI00_Direction$NEAR_ANGLE < 180, 'NWW',
+#   ifelse(No_GI00_Direction$NEAR_ANGLE < 0 & No_GI00_Direction$NEAR_ANGLE > -45, 'SEE',
+#   ifelse(No_GI00_Direction$NEAR_ANGLE < -45 & No_GI00_Direction$NEAR_ANGLE > -90, 'SSE',    ifelse(No_GI00_Direction$NEAR_ANGLE < -90 & No_GI00_Direction$NEAR_ANGLE > -135, 'SSW',
+#   ifelse(No_GI00_Direction$NEAR_ANGLE == 0, 'NEE', 
+#   ifelse(No_GI00_Direction$NEAR_ANGLE == 45, 'NNE',
+#   ifelse(No_GI00_Direction$NEAR_ANGLE == 90, 'NNW',
+#   ifelse(No_GI00_Direction$NEAR_ANGLE == 135, 'NWW',
+#   ifelse(No_GI00_Direction$NEAR_ANGLE == 180, 'SWW',
+#   ifelse(No_GI00_Direction$NEAR_ANGLE == -45, 'SEE',
+#   ifelse(No_GI00_Direction$NEAR_ANGLE == -90, 'SSE',
+#   ifelse(No_GI00_Direction$NEAR_ANGLE == -135, 'SSW','SWW')))))))))))))))
+# 
+# # Add in number to represent each cardinal quadrant. 
+# No_GI00_Direction$Card_Number = 0
+# No_GI00_Direction$Card_Number =  
+#   ifelse(No_GI00_Direction$Card_Direct == "NEE", 3,
+#   ifelse(No_GI00_Direction$Card_Direct == "NNE", 4,
+#   ifelse(No_GI00_Direction$Card_Direct == "NNW", 5,
+#   ifelse(No_GI00_Direction$Card_Direct == "NWW", 6,
+#   ifelse(No_GI00_Direction$Card_Direct == "SEE", 2,
+#   ifelse(No_GI00_Direction$Card_Direct == "SSE", 1,
+#   ifelse(No_GI00_Direction$Card_Direct == "SSW", 8,7)))))))
+
+#***********************
+# Merge Cardinal Direction data back onto COMBO Files
+# First Merge FID onto COMBO files
+
+
+
+
+#*************
+COMBO_buff00 = 
+  merge(COMBO_buff00, as.data.frame(swm05[,c("STRU_NO","FID")])[,1:2],
+        by="STRU_NO",all.x=T)
+
+COMBO_buff15 = 
+  merge(COMBO_buff15, as.data.frame(swm14[,c("STRU_NO","FID")])[,1:2],
+        by="STRU_NO",all.x=T)
+
+# COMBO_No_GI_buff00b = 
+#   merge(COMBO_No_GI_buff00b, as.data.frame(No_GI_buff00[,c("ID","FID")])[,1:2],
+#         by="ID",all.x=T)
+# 
+# COMBO_No_GI_buff15b = 
+#   merge(COMBO_No_GI_buff15b, as.data.frame(No_GI_buff00[,c("ID","FID")])[,1:2],
+#         by="ID",all.x=T)
+
+# Now merge Cardinal Direction
+COMBO_buff00 = 
+  merge(COMBO_buff00, swm05_Direction[,c("NEAR_FID","Card_Number")],
+        by.x="FID",by.y="NEAR_FID",all.x=T)
+
+COMBO_buff15 = 
+  merge(COMBO_buff15, swm14_Direction[,c("NEAR_FID","Card_Number")],
+        by.x="FID",by.y="NEAR_FID",all.x=T)
+
+# COMBO_No_GI_buff00b = 
+#   merge(COMBO_No_GI_buff00b, No_GI00_Direction[,c("NEAR_FID","Card_Number")],
+#         by.x="FID",by.y="NEAR_FID",all.x=T)
+# 
+# COMBO_No_GI_buff15b = 
+#   merge(COMBO_No_GI_buff15b, No_GI00_Direction[,c("NEAR_FID","Card_Number")],
+#         by.x="FID",by.y="NEAR_FID",all.x=T)
+
+
+#*******************************************
+# Distance to Greenspace
+#*******************************************
+parks = readOGR(paste(dir,'GIS/MD/Parks',sep=""),
+             'MD_Parks_GI_Corridors_Hubs_dissolve_usgs')
+
+# Need to convert to planar coordinates
+parks_prj <- spTransform(parks, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+swm05_prj <- spTransform(swm05, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+swm14_prj <- spTransform(swm14, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+# No_GI00_prj <- spTransform(No_GI00, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+
+parks_prj2 <- spTransform(parks, CRS("+proj=aeqd +lon_0=23.4 +lat_0=1-0.23"))
+swm05_prj2 <- spTransform(swm05, CRS("+proj=aeqd +lon_0=23.4 +lat_0=1-0.23"))
+swm14_prj2 <- spTransform(swm14, CRS("+proj=aeqd +lon_0=23.4 +lat_0=1-0.23"))
+# No_GI00_prj2 <- spTransform(No_GI00, CRS("+proj=aeqd +lon_0=23.4 +lat_0=1-0.23"))
+
+
+# Use gDistance to calculate distance from GI points to city center
+# produce matrix of distances between points and polygons
+m.1 = gDistance(swm05_prj, parks_prj, byid=TRUE) # finds minimum distance between point and polygon (in meters)
+m2.1 = as.data.frame(t(m.1)) # transpose
+swm05$Dist_parks = m2.1
+#test=swm05[swm05$STRU_NO == 1871,"Dist_parks"] # appears to be working good
+
+m.2 = gDistance(swm14_prj, parks_prj, byid=TRUE) # finds minimum distance between point and polygon (in meters)
+m2.2 = as.data.frame(t(m.2)) # transpose
+swm14$Dist_parks = m2.2
+
+# m.3 = gDistance(No_GI00_prj, parks_prj, byid=TRUE) # finds minimum distance between point and polygon (in meters)
+# m2.3 = as.data.frame(t(m.3)) # transpose
+# No_GI00$Dist_parks = m2.3
+
+
+#*******************************************
+# Distance to Major Roads or Public Transit
+#*******************************************
+roads = readOGR(paste(dir,'GIS/MD/NRCS Data Gateway/Roads/Primary Roads',sep=""),
+             'road100k_primary_l_md')
+# roads2 = readOGR(paste(dir,'GIS/MD/NRCS Data Gateway/Roads/Primary and Secondary Roads',sep=""),
+#              'road100k_l_md')
+
+# Need to convert to planar coordinates
+roads_prj <- spTransform(roads, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+swm05_prj <- spTransform(swm05, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+swm14_prj <- spTransform(swm14, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+# No_GI00_prj <- spTransform(No_GI00, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+roads_prj2 <- spTransform(roads, CRS("+proj=longlat +ellps=GRS80 +datum=NAD83 +no_defs +towgs84=0,0,0"))
+swm05_prj2 <- spTransform(swm05, CRS("+proj=longlat +ellps=GRS80 +datum=NAD83 +no_defs +towgs84=0,0,0"))
+
+class(roads_prj2)
+class(swm05_prj2)
+
+# Use gDistance to calculate distance from GI points to city center
+# produce matrix of distances between points and polygons
+# You must loop so that you only compare a single coordinate in sp.pts with the entirety of all lines geometries in sp.lns, otherwise you get the distance from an aggregate value across all points. 
+#***
+shortest.dists1 <- numeric(nrow(swm05_prj))
+for (i in seq_len(nrow(swm05_prj))) {
+    shortest.dists1[i] <- gDistance(swm05_prj[i,], roads_prj)
+}
+swm05$Dist_roads = shortest.dists1
+#test=swm05[swm05$STRU_NO == 1444,"Dist_roads"] # appears to be working good
+
+#***
+shortest.dists2 <- numeric(nrow(swm14_prj))
+for (i in seq_len(nrow(swm14_prj))) {
+    shortest.dists2[i] <- gDistance(swm14_prj[i,], roads_prj)
+}
+swm14$Dist_roads = shortest.dists2
+
+#***
+# shortest.dists3 <- numeric(nrow(No_GI00_prj))
+# for (i in seq_len(nrow(No_GI00_prj))) {
+#     shortest.dists3[i] <- gDistance(No_GI00_prj[i,], roads_prj)
+# }
+# No_GI00$Dist_roads = shortest.dists3
+
+
+#*******************************************
+# Distance to Water (river or lake)
+#*******************************************
+water1 = readOGR(paste(dir,'GIS/MD/NRCS Data Gateway/hydrography',sep=""),
+             'nhd24kar_a_md')
+water2 = readOGR(paste(dir,'GIS/MD/NRCS Data Gateway/hydrography',sep=""),
+             'nhd24kwb_a_md')
+
+# Remove non-matching columns
+drops <- c("GLOBALID","VISIBILITY","FIPS_C") # list of col names
+water1 <- water1[,!(names(water1) %in% drops)] #remove columns "AREA" and "PERIMETER"
+
+drops <- c("REACHCODE") # list of col names
+water2 <- water2[,!(names(water2) %in% drops)] #remove columns "AREA" and "PERIMETER"
+
+water = rbind(water1,water2)
+water$ID = seq(from=0,to=length(water)-1) # ad ID
+
+# Or try
+# b <- spChFIDs(b, paste("b", row.names(b), sep="."))
+
+# Remove Areas of water < 0.01 km2 (100 x 100 meters)
+# Remove Areas of water < 0.1 km2 (316 x 316 meters)
+# Remove Areas of water < 0.25 km2 (500 x 500 meters)
+# Remove Areas of water < 0.5 km2 (700 x 700 meters)
+# Remove Areas of water < 1 km2 (1000 x 1000 meters)
+
+
+water$size = ifelse(water$AREASQKM < 0.5,0,1)
+waters = water[water$size == 1,]
+nrow(waters)
+
+# Convert to albers equal area coordinates
+water_prj <- spTransform(waters, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+# water_prj2 <- spTransform(waters, CRS("+proj=longlat +ellps=GRS80 +datum=NAD83 +no_defs +towgs84=0,0,0"))
+# swm05_prj2 <- spTransform(swm05, CRS("+proj=longlat +ellps=GRS80 +datum=NAD83 +no_defs +towgs84=0,0,0"))
+# swm14_prj2 <- spTransform(swm05, CRS("+proj=longlat +ellps=GRS80 +datum=NAD83 +no_defs +towgs84=0,0,0"))
+# No_GI00_prj2 <- spTransform(No_GI00, CRS("+proj=longlat +ellps=GRS80 +datum=NAD83 +no_defs +towgs84=0,0,0"))
+
+# Use gDistance to calculate distance from GI points to city center
+# produce matrix of distances between points and polygons
+
+#***
+w.1 = apply(gDistance(swm05_prj, water_prj,byid=TRUE),2,min)
+w2.1 = as.data.frame((w.1)) # transpose
+swm05$Dist_water = w2.1
+#test2=test[test$STRU_NO == 300,"Dist_water"] # appears to be working good
+
+#***
+w.2 = apply(gDistance(swm14_prj, water_prj,byid=TRUE),2,min)
+w2.2 = as.data.frame((w.2)) # transpose
+swm14$Dist_water = w2.2
+
+#***
+# w.3 = apply(gDistance(No_GI00_prj, water_prj,byid=TRUE),2,min)
+# w2.3 = as.data.frame((w.3)) # transpose
+# No_GI00$Dist_water = w2.3
+
+#******************************************
+# dists1 <- numeric(nrow(swm05_prj))
+# for (i in seq_len(nrow(swm05_prj))) {
+#     dists1[i] <- gDistance(swm05_prj[i,], water_prj)
+# }
+# swm05$Dist_water2 = dists1
+
+
+#*******************************************
+# Distance to Starbucks, Whole foods, Trader Joe's
+#*******************************************
+
+#*******************************************
+# % Residential
+#*******************************************
+
+#*************************************************
+# Merge Parks, roads, and water data onto COMBO Files
+
+# 
+
+# Gets ride of funky structure 
+
+swm05$Dist_parks = as.numeric(unlist(swm05$Dist_parks))
+swm05$Dist_roads = as.numeric(unlist(swm05$Dist_roads))
+swm05$Dist_water = as.numeric(unlist(swm05$Dist_water))
+
+swm14$Dist_parks = as.numeric(unlist(swm14$Dist_parks))
+swm14$Dist_roads = as.numeric(unlist(swm14$Dist_roads))
+swm14$Dist_water = as.numeric(unlist(swm14$Dist_water))
+
+# No_GI00$Dist_parks = as.numeric(unlist(No_GI00$Dist_parks))
+# No_GI00$Dist_roads = as.numeric(unlist(No_GI00$Dist_roads))
+# No_GI00$Dist_water = as.numeric(unlist(No_GI00$Dist_water))
+
+
+#
+
+COMBO_buff00 = 
+  merge(COMBO_buff00,as.data.frame(swm05[,c("STRU_NO","Dist_parks",
+        "Dist_roads","Dist_water")])[,1:4],by="STRU_NO",all.x=T)
+
+COMBO_buff15 = 
+  merge(COMBO_buff15, as.data.frame(swm14[,c("STRU_NO","Dist_parks",
+        "Dist_roads","Dist_water")])[,1:4], by="STRU_NO",all.x=T)
+
+# COMBO_No_GI_buff00b = 
+#   merge(COMBO_No_GI_buff00b,as.data.frame(No_GI00[,c("ID","Dist_parks",
+#         "Dist_roads","Dist_water")])[,1:4],by="ID",all.x=T)
+# 
+# COMBO_No_GI_buff15b = 
+#   merge(COMBO_No_GI_buff15b, as.data.frame(No_GI00[,c("ID","Dist_parks",
+#         "Dist_roads","Dist_water")])[,1:4],by="ID",all.x=T) 
+
+
+# saveRDS(COMBO_buff00, paste(dir, 'NatureNet/Data/COMBO_buff00_8th_sep.rds',sep=""))
+# saveRDS(COMBO_buff15, paste(dir, 'NatureNet/Data/COMBO_buff15_8th_sep.rds',sep=""))
+
+# saveRDS(COMBO_buff00, paste(dir, 'NatureNet/Data/COMBO_buff00_4th_sep.rds',sep=""))
+# saveRDS(COMBO_buff15, paste(dir, 'NatureNet/Data/COMBO_buff15_4th_sep.rds',sep=""))
+
+# saveRDS(COMBO_buff00, paste(dir, 'NatureNet/Data/COMBO_buff00_half_sep.rds',sep=""))
+# saveRDS(COMBO_buff15, paste(dir, 'NatureNet/Data/COMBO_buff15_half_sep.rds',sep=""))
+
+```
+
+# 6. Add on other Variables for No GI
+
+```{r}
+
+#*******************************************
+# DISTANCE TO CITY CENTER
+#*******************************************
+# Need to convert to decimal coordinate system
+City_Center <- spTransform(City_Center, CRS('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'))
+
+# make point layer from No_GI_buff00
+No_GI00 = gCentroid(No_GI_buff00,byid=TRUE) 
+No_GI00$ID = seq.int(length(No_GI00))
+
+No_GI00_prj <- spTransform(No_GI00, CRS('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'))
+
+# Use distm to calculate distance from GI points to city center
+No_GI00$Dist_City_Center = distm(No_GI00_prj, City_Center, fun = distHaversine)
+
+# Merge Values onto COMBO
+COMBO_No_GI_buff00b = merge(COMBO_No_GI_buff00b,
+                            as.data.frame(No_GI00[,c("ID","Dist_City_Center")])[,1:2],
+                            by="ID",all.x=T)
+
+COMBO_No_GI_buff15b = merge(COMBO_No_GI_buff15b,
+                            as.data.frame(No_GI00[,c("ID","Dist_City_Center")])[,1:2],
+                            by="ID",all.x=T)
+
+
+#*******************************************
+# FIND CITY Cardinal Direction QUADRANT
+#*******************************************
+
+#test = swm05_Direction 
+#swm05_Direction = test
+
+# NEE = 0 to 45 degrees = 3
+# NNE = 45 to 90 degrees = 4
+# NNW = 90 to 135 degrees = 5
+# NWW = 135 to 180 degrees = 6
+# SEE = 0 to -45 degrees = 2
+# SSE = 45 to -90 degrees = 1
+# SSW = -90 to -135 degrees = 8
+# SWW = -135 to -180 degrees = 7
+
+#******************************************
+
+# For No_GI00
+No_GI00_Direction$Card_Direct = 'NA'
+No_GI00_Direction$Card_Direct = 
+  ifelse(No_GI00_Direction$NEAR_ANGLE > 0 & No_GI00_Direction$NEAR_ANGLE < 45, 'NEE',
+  ifelse(No_GI00_Direction$NEAR_ANGLE > 45 & No_GI00_Direction$NEAR_ANGLE < 90, 'NNE',
+  ifelse(No_GI00_Direction$NEAR_ANGLE > 90 & No_GI00_Direction$NEAR_ANGLE < 135, 'NNW',
+  ifelse(No_GI00_Direction$NEAR_ANGLE > 135 & No_GI00_Direction$NEAR_ANGLE < 180, 'NWW',
+  ifelse(No_GI00_Direction$NEAR_ANGLE < 0 & No_GI00_Direction$NEAR_ANGLE > -45, 'SEE',
+  ifelse(No_GI00_Direction$NEAR_ANGLE < -45 & No_GI00_Direction$NEAR_ANGLE > -90, 'SSE',    ifelse(No_GI00_Direction$NEAR_ANGLE < -90 & No_GI00_Direction$NEAR_ANGLE > -135, 'SSW',
+  ifelse(No_GI00_Direction$NEAR_ANGLE == 0, 'NEE', 
+  ifelse(No_GI00_Direction$NEAR_ANGLE == 45, 'NNE',
+  ifelse(No_GI00_Direction$NEAR_ANGLE == 90, 'NNW',
+  ifelse(No_GI00_Direction$NEAR_ANGLE == 135, 'NWW',
+  ifelse(No_GI00_Direction$NEAR_ANGLE == 180, 'SWW',
+  ifelse(No_GI00_Direction$NEAR_ANGLE == -45, 'SEE',
+  ifelse(No_GI00_Direction$NEAR_ANGLE == -90, 'SSE',
+  ifelse(No_GI00_Direction$NEAR_ANGLE == -135, 'SSW','SWW')))))))))))))))
+
+# Add in number to represent each cardinal quadrant. 
+No_GI00_Direction$Card_Number = 0
+No_GI00_Direction$Card_Number =  
+  ifelse(No_GI00_Direction$Card_Direct == "NEE", 3,
+  ifelse(No_GI00_Direction$Card_Direct == "NNE", 4,
+  ifelse(No_GI00_Direction$Card_Direct == "NNW", 5,
+  ifelse(No_GI00_Direction$Card_Direct == "NWW", 6,
+  ifelse(No_GI00_Direction$Card_Direct == "SEE", 2,
+  ifelse(No_GI00_Direction$Card_Direct == "SSE", 1,
+  ifelse(No_GI00_Direction$Card_Direct == "SSW", 8,7)))))))
+
+#***********************
+# Merge Cardinal Direction data back onto COMBO Files
+# First Merge FID onto COMBO files
+
+#*************
+
+
+COMBO_No_GI_buff00b = 
+  merge(COMBO_No_GI_buff00b, as.data.frame(No_GI_buff00[,c("ID","FID")])[,1:2],
+        by="ID",all.x=T)
+
+COMBO_No_GI_buff15b = 
+  merge(COMBO_No_GI_buff15b, as.data.frame(No_GI_buff00[,c("ID","FID")])[,1:2],
+        by="ID",all.x=T)
+
+# Now merge Cardinal Direction
+COMBO_No_GI_buff00b = 
+  merge(COMBO_No_GI_buff00b, No_GI00_Direction[,c("NEAR_FID","Card_Number")],
+        by.x="FID",by.y="NEAR_FID",all.x=T)
+
+COMBO_No_GI_buff15b = 
+  merge(COMBO_No_GI_buff15b, No_GI00_Direction[,c("NEAR_FID","Card_Number")],
+        by.x="FID",by.y="NEAR_FID",all.x=T)
+
+
+#*******************************************
+# Distance to Greenspace
+#*******************************************
+parks = readOGR(paste(dir,'GIS/MD/Parks',sep=""),
+             'MD_Parks_GI_Corridors_Hubs_dissolve_usgs')
+
+# Need to convert to planar coordinates
+No_GI00_prj <- spTransform(No_GI00, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+
+parks_prj2 <- spTransform(parks, CRS("+proj=aeqd +lon_0=23.4 +lat_0=1-0.23"))
+No_GI00_prj2 <- spTransform(No_GI00, CRS("+proj=aeqd +lon_0=23.4 +lat_0=1-0.23"))
+
+
+# Use gDistance to calculate distance from GI points to city center
+# produce matrix of distances between points and polygons
+m.3 = gDistance(No_GI00_prj, parks_prj, byid=TRUE) # finds minimum distance between point and polygon (in meters)
+m2.3 = as.data.frame(t(m.3)) # transpose
+No_GI00$Dist_parks = m2.3
+
+
+#*******************************************
+# Distance to Major Roads or Public Transit
+#*******************************************
+roads = readOGR(paste(dir,'GIS/MD/NRCS Data Gateway/Roads/Primary Roads',sep=""),
+             'road100k_primary_l_md')
+
+# Need to convert to planar coordinates
+roads_prj <- spTransform(roads, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+No_GI00_prj <- spTransform(No_GI00, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+roads_prj2 <- spTransform(roads, CRS("+proj=longlat +ellps=GRS80 +datum=NAD83 +no_defs +towgs84=0,0,0"))
+
+class(roads_prj2)
+class(swm05_prj2)
+
+# Use gDistance to calculate distance from GI points to city center
+# produce matrix of distances between points and polygons
+# You must loop so that you only compare a single coordinate in sp.pts with the entirety of all lines geometries in sp.lns, otherwise you get the distance from an aggregate value across all points. 
+
+#***
+shortest.dists3 <- numeric(nrow(No_GI00_prj))
+for (i in seq_len(nrow(No_GI00_prj))) {
+    shortest.dists3[i] <- gDistance(No_GI00_prj[i,], roads_prj)
+}
+No_GI00$Dist_roads = shortest.dists3
+
+
+#*******************************************
+# Distance to Water (river or lake)
+#*******************************************
+
+# Use gDistance to calculate distance from GI points to city center
+# produce matrix of distances between points and polygons
+
+
+#***
+w.3 = apply(gDistance(No_GI00_prj, water_prj,byid=TRUE),2,min)
+w2.3 = as.data.frame((w.3)) # transpose
+No_GI00$Dist_water = w2.3
+
+#******************************************
+# dists1 <- numeric(nrow(swm05_prj))
+# for (i in seq_len(nrow(swm05_prj))) {
+#     dists1[i] <- gDistance(swm05_prj[i,], water_prj)
+# }
+# swm05$Dist_water2 = dists1
+
+
+#*******************************************
+# Distance to Starbucks, Whole foods, Trader Joe's
+#*******************************************
+
+#*******************************************
+# % Residential
+#*******************************************
+
+#*************************************************
+# Merge Parks, roads, and water data onto COMBO Files
+
+# 
+
+# Gets ride of funky structure 
+
+No_GI00$Dist_parks = as.numeric(unlist(No_GI00$Dist_parks))
+No_GI00$Dist_roads = as.numeric(unlist(No_GI00$Dist_roads))
+No_GI00$Dist_water = as.numeric(unlist(No_GI00$Dist_water))
+
+
+#
+
+COMBO_No_GI_buff00b = 
+  merge(COMBO_No_GI_buff00b,as.data.frame(No_GI00[,c("ID","Dist_parks",
+        "Dist_roads","Dist_water")])[,1:4],by="ID",all.x=T)
+
+COMBO_No_GI_buff15b = 
+  merge(COMBO_No_GI_buff15b, as.data.frame(No_GI00[,c("ID","Dist_parks",
+        "Dist_roads","Dist_water")])[,1:4],by="ID",all.x=T) 
+
+# saveRDS(COMBO_No_GI_buff00b, paste(dir, 'NatureNet/Data/COMBO_No_GI_buff00b_8th_sep.rds',sep=""))
+# saveRDS(COMBO_No_GI_buff15b, paste(dir, 'NatureNet/Data/COMBO_No_GI_buff15b_8th_sep.rds',sep=""))
+
+# saveRDS(COMBO_No_GI_buff00b, paste(dir, 'NatureNet/Data/COMBO_No_GI_buff00b_4th_sep.rds',sep=""))
+# saveRDS(COMBO_No_GI_buff15b, paste(dir, 'NatureNet/Data/COMBO_No_GI_buff15b_4th_sep.rds',sep=""))
+
+# saveRDS(COMBO_No_GI_buff00b, paste(dir, 'NatureNet/Data/COMBO_No_GI_buff00b_half_sep.rds',sep=""))
+# saveRDS(COMBO_No_GI_buff15b, paste(dir, 'NatureNet/Data/COMBO_No_GI_buff15b_half_sep.rds',sep=""))
+
+```
+
+
+#****************************
+# Selecting/Reading in Saved RDS Files
+```{r}
+# GI Buffers
+
+COMBO_buff00 = readRDS(paste(dir, 'NatureNet/Data/COMBO_buff00_8th_sep.rds',sep=""))
+COMBO_buff15 = readRDS(paste(dir, 'NatureNet/Data/COMBO_buff15_8th_sep.rds',sep=""))
+
+# COMBO_buff00 = readRDS(paste(dir, 'NatureNet/Data/COMBO_buff00_4th_sep.rds',sep=""))
+# COMBO_buff15 = readRDS(paste(dir, 'NatureNet/Data/COMBO_buff15_4th_sep.rds',sep=""))
+# 
+# COMBO_buff00 = readRDS(paste(dir, 'NatureNet/Data/COMBO_buff00_half_sep.rds',sep=""))
+# COMBO_buff15 = readRDS(paste(dir, 'NatureNet/Data/COMBO_buff15_half_sep.rds',sep=""))
+
+# No GI Buffers
+COMBO_No_GI_buff00b = readRDS(paste(dir, 'NatureNet/Data/COMBO_No_GI_buff00b_8th_sep.rds',sep=""))
+COMBO_No_GI_buff15b = readRDS(paste(dir, 'NatureNet/Data/COMBO_No_GI_buff15b_8th_sep.rds',sep=""))
+No_GI_buff00 = readOGR(paste(dir,'GIS/MD/Green_Infrastructure/GI_Buffer',sep=""),'No_GI_buff15_16th_mile_8thSep')
+
+# COMBO_No_GI_buff00b = readRDS(paste(dir, 'NatureNet/Data/COMBO_No_GI_buff00b_4th_sep.rds',sep=""))
+# COMBO_No_GI_buff15b = readRDS(paste(dir, 'NatureNet/Data/COMBO_No_GI_buff15b_4th_sep.rds',sep=""))
+# No_GI_buff00 = readOGR(paste(dir,'GIS/MD/Green_Infrastructure/GI_Buffer',sep=""),'No_GI_buff15_16th_mile_4thSep')
+
+# COMBO_No_GI_buff00b = readRDS(paste(dir, 'NatureNet/Data/COMBO_No_GI_buff00b_half_sep.rds',sep=""))
+# COMBO_No_GI_buff15b = readRDS(paste(dir, 'NatureNet/Data/COMBO_No_GI_buff15b_half_sep.rds',sep=""))
+# No_GI_buff00 = readOGR(paste(dir,'GIS/MD/Green_Infrastructure/GI_Buffer',sep=""),'No_GI_buff15_16th_mile_halfSep')
+
+
+
+
+```
+
+#********************************************
+
+
+# Plotting
+```{r }
+
+detach(package:gtools) 
+library(rgdal)
+library(rgeos)  # for gIntersection
+library(raster) # for extent()
+library(sp) # for extent()
+
+
+# look at buff00 vs. No_GI_buff00 
+class(buff00)
+class(No_GI_buff00)
+
+plot(buff00[1],border="red")
+plot(No_GI_buff00, add = T)
+sp::plot(No_GI_buff00)
+sp::plot(buff00,border="red",add=T)
+
+# library(mapview)
+# mapview(buff00)
+
+
+```
+
+# COMPILING and TRANSFORMING DATASETS
+
+# 1. Keep only No_GI_buff that are within 2000 m of a GI buff
+```{r Subsetting No_GI_Buff}
+
+
+# Create Point Layer for buff00
+buff00_pts = gCentroid(buff00,byid=TRUE) #obtains the point at the centroid of the GI buffer circle.  
+
+# Transform the data
+buff00_pts <- spTransform(buff00_pts, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+#buff00_pts$ID = seq.int(length(buff00_pts))
+class(buff00_pts)
+length(buff00_pts) # 1323
+
+
+# Add buffer around GI centroids 
+buff00_km <- gBuffer(buff00_pts, width=2000, byid=TRUE ) # width is in meters
+
+# plot(buff00_km,border="blue")
+# plot(No_GI_buff00,border="green", add = T)
+# plot(buff00,border="red",add=T)
+
+# Clip out No_GI_buff00 that are within 2000 m of the GI location
+buff00_km <- spTransform(buff00_km, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+No_GI_buff00 <- spTransform(No_GI_buff00, CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"))
+
+
+No_GI_buff00_clip = crop(No_GI_buff00, buff00_km)
+# plot(No_GI_buff00_clip)
+# 
+# plot(buff00,border="red")
+# plot(No_GI_buff00_clip,add=T)
+# plot(No_GI_buff00)
+
+nrow(No_GI_buff00_clip) #  1130, 4297 for 1/8 sep
+nrow(No_GI_buff00) # 2454, 7538 for 1/8 Sep
+nrow(buff00) # 1323
+
+#***********************************************************
+
+# Subset out the No_GI_buff00_clip from COMBO_No_GI_buff00
+nrow(COMBO_No_GI_buff00b) # 3006
+selectedRows = (COMBO_No_GI_buff00b$ID %in% No_GI_buff00_clip$ID)
+COMBO_No_GI_buff00 = COMBO_No_GI_buff00b[selectedRows,] # this is the point buffer that is not near SWM
+nrow(COMBO_No_GI_buff00) # 1103, 4234 for 1/8 sep
+
+selectedRows = (COMBO_No_GI_buff15b$ID %in% No_GI_buff00_clip$ID)
+COMBO_No_GI_buff15 = COMBO_No_GI_buff15b[selectedRows,] # this is the point buffer that is not near SWM
+nrow(COMBO_No_GI_buff15) # 1103, 4234 for 1/8 sep
+
+
+####
+```
+
+
+
+# 2. Prep GI data
+```{r}
+# COMBINE 2000 GI with No_GI 2000
+COMBO_buff00_original = COMBO_buff00 # us this if need to re-run after strip STRU_NO
+
+
+# Add TYPE Field
+COMBO_buff00$TYPE = "TREATMENT"
+
+# Add UniqID
+COMBO_buff00$UniqID = paste(COMBO_buff00$STRU_NO,"GI",sep="_")
+
+# Remove STRU_NO and ID
+COMBO_buff00 = subset(COMBO_buff00, select=-c(STRU_NO))
+
+# Remove FID 
+COMBO_buff00 = subset(COMBO_buff00, select=-c(FID))
+
+# Remove totcells 
+COMBO_buff00 = subset(COMBO_buff00, select=-c(totcells))
+
+# Set Column Names in same order
+COMBO_buff00 = COMBO_buff00[,c("PropertyValue","IncomePerCapita","Total_Pop","Pop_Density","PercBelowPoverty","Perc_White","Perc_Black","Perc_Minority","YearBuilt","Forest","Agriculture","Developed","Shrubland","Water", "Barren.Land","Grassland","percent.ISC","Dist_City_Center","Card_Number","Dist_parks","Dist_roads","Dist_water","TYPE","UniqID")]
+
+
+#***********************************************************
+# COMBINE 2015 GI with No_GI 2015
+
+# Add TYPE Field
+COMBO_buff15$TYPE = "TREATMENT"
+
+# Add UniqID
+COMBO_buff15$UniqID = paste(COMBO_buff15$STRU_NO,"GI",sep="_")
+
+# Remove STRU_NO and ID
+COMBO_buff15 = subset(COMBO_buff15, select=-c(STRU_NO))
+
+# Remove FID 
+COMBO_buff15 = subset(COMBO_buff15, select=-c(FID))
+
+# Remove totcells 
+COMBO_buff15 = subset(COMBO_buff15, select=-c(totcells))
+
+# Set Column Names in same order
+COMBO_buff15 = COMBO_buff15[,c("PropertyValue","IncomePerCapita","Total_Pop","Pop_Density","PercBelowPoverty","Perc_White","Perc_Black","Perc_Minority","YearBuilt","Forest","Agriculture","Developed","Shrubland","Water", "Barren.Land","Grassland","percent.ISC","Dist_City_Center","Card_Number","Dist_parks","Dist_roads","Dist_water","TYPE","UniqID")]
+
+
+
+#####################################################################################
+
+
+
+```
+
+# 3. Prep No_GI for COMBO
+```{r}
+# COMBINE 2000 GI with No_GI 2000
+COMBO_No_GI_buff00_original = COMBO_No_GI_buff00 # us this if need to re-run after strip FID or ID
+
+
+# Add TYPE Field
+COMBO_No_GI_buff00$TYPE = "CONTROL"
+
+# Add UniqID
+COMBO_No_GI_buff00$UniqID = paste(COMBO_No_GI_buff00$ID,"NoGI",sep="_")
+
+# Remove STRU_NO and ID
+COMBO_No_GI_buff00 = subset(COMBO_No_GI_buff00, select=-c(ID))
+
+# Remove FID 
+COMBO_No_GI_buff00 = subset(COMBO_No_GI_buff00, select=-c(FID))
+
+# Remove totcells 
+COMBO_No_GI_buff00 = subset(COMBO_No_GI_buff00, select=-c(totcells))
+
+
+# Set Column Names in same order
+COMBO_No_GI_buff00 = COMBO_No_GI_buff00[,c("PropertyValue","IncomePerCapita","Total_Pop","Pop_Density","PercBelowPoverty","Perc_White","Perc_Black","Perc_Minority","YearBuilt","Forest","Agriculture","Developed","Shrubland","Water", "Barren.Land","Grassland","percent.ISC","Dist_City_Center","Card_Number","Dist_parks","Dist_roads","Dist_water","TYPE","UniqID")]
+
+
+
+#***********************************************************
+# COMBINE 2015 GI with No_GI 2015
+
+# Add TYPE Field
+COMBO_No_GI_buff15$TYPE = "CONTROL"
+
+# Add UniqID
+COMBO_No_GI_buff15$UniqID = paste(COMBO_No_GI_buff15$ID,"NoGI",sep="_")
+
+# Remove STRU_NO and ID
+COMBO_No_GI_buff15 = subset(COMBO_No_GI_buff15, select=-c(ID))
+
+# Remove FID 
+COMBO_No_GI_buff15 = subset(COMBO_No_GI_buff15, select=-c(FID))
+
+# Remove totcells 
+COMBO_No_GI_buff15 = subset(COMBO_No_GI_buff15, select=-c(totcells))
+
+
+# Set Column Names in same order
+COMBO_No_GI_buff15 = COMBO_No_GI_buff15[,c("PropertyValue","IncomePerCapita","Total_Pop","Pop_Density","PercBelowPoverty","Perc_White","Perc_Black","Perc_Minority","YearBuilt","Forest","Agriculture","Developed","Shrubland","Water", "Barren.Land","Grassland","percent.ISC","Dist_City_Center","Card_Number","Dist_parks","Dist_roads","Dist_water","TYPE","UniqID")]
+
+
+```
+
+
+# 4. Combine GI and No_GI 
+```{r Combine GI and No_GI}
+# COMBINE 2000 GI with No_GI 2000
+
+# COMBINE
+
+library(gtools)
+COMBO2000 = smartbind(COMBO_buff00,COMBO_No_GI_buff00)
+COMBO2000$Dist_City_Center = as.numeric(COMBO2000$Dist_City_Center)
+
+class(COMBO_buff00)
+
+# ADD TREATMENT = 1 
+COMBO2000$TREATMENT = ifelse(COMBO2000$TYPE == "TREATMENT",1,0)
+
+#***********************************************************
+# COMBINE 2015 GI with No_GI 2015
+
+
+# COMBINE
+COMBO2015 = smartbind(COMBO_buff15,COMBO_No_GI_buff15)
+COMBO2015$Dist_City_Center = as.numeric(COMBO2015$Dist_City_Center)
+class(COMBO_buff15)
+
+# ADD TREATMENT = 1 
+COMBO2015$TREATMENT = ifelse(COMBO2015$TYPE == "TREATMENT",1,0)
+class(COMBO2015)
+
+#####################################################################################
+
+```
+
+
+# 5. CALCULATE % CHANGE IN PROPERTY VALUE 2000 to 2015
+```{r}
+
+##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>
+# CALCULATE % CHANGE IN PROPERTY VALUE 2000 to 2015
+##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>
+
+COMBO2000$YEAR = 2000
+COMBO2015$YEAR = 2015
+
+ncol(COMBO2000) # 26
+ncol(COMBO2015) # 26
+
+
+COMBO_ALL = rbind(COMBO2000,COMBO2015)
+
+# saveRDS(COMBO_ALL, paste(dir, 'NatureNet/Data/COMBO_ALL_8th_sep.rds',sep=""))
+# write.csv(COMBO_ALL, paste(dir, 'NatureNet/Data/COMBO_ALL_8th_sep.csv',sep=""))
+
+
+# Subset by Type
+
+COMBO_GI_ALL = COMBO_ALL[COMBO_ALL$TYPE == "TREATMENT",] # keeps all rows without NA in specified column
+COMBO_No_GI_ALL = COMBO_ALL[COMBO_ALL$TYPE == "CONTROL",] # keeps all rows without NA in specified column
+# COMBO_GI_ALL = COMBO_ALL[complete.cases(COMBO_ALL[,c("STRU_NO")]),] # keeps all rows without NA in specified column
+# COMBO_No_GI_ALL = COMBO_ALL[complete.cases(COMBO_ALL[,c("ID")]),] # keeps all rows without NA in specified column
+
+  
+library(dplyr)
+COMBO_GI_Chg = COMBO_GI_ALL %>% 
+                dplyr::group_by(UniqID) %>% 
+                summarize(Diff = PropertyValue[2] - PropertyValue[1],
+                          Perc_Change = 100*Diff/PropertyValue[1])
+
+COMBO_GI_Chg = COMBO_GI_Chg[complete.cases(COMBO_GI_Chg[,c("Perc_Change")]),] # Keep non NAs
+nrow(COMBO_GI_Chg) # 1227
+
+
+# test = COMBO_GI_ALL[COMBO_GI_ALL$STRU_NO == 6,]
+# test$PropertyValue[2]-test$PropertyValue[1]
+# 100*(test$PropertyValue[2]-test$PropertyValue[1])/test$PropertyValue[1]
+
+COMBO_NO_GI_Chg = COMBO_No_GI_ALL %>% 
+                group_by(UniqID) %>% 
+                summarize(Diff = PropertyValue[2] - PropertyValue[1],
+                Perc_Change = 100*Diff/PropertyValue[1])
+
+COMBO_NO_GI_Chg = COMBO_NO_GI_Chg[complete.cases(COMBO_NO_GI_Chg[,c("Perc_Change")]),] # Keep non NAs
+nrow(COMBO_NO_GI_Chg) # 1053, 3759 for 1/8 sep
+
+# COMBO_GI_Chg$TREATMENT = "Treatment"
+# COMBO_NO_GI_Chg$TREATMENT = "Control"
+
+###
+```
+
+
+# 6. Average % Change before cluster analysis
+```{r Average % Change}
+
+###########################################################
+# Average % Change before cluster analysis
+###########################################################
+
+nrow(COMBO_GI_Chg) # 1227
+nrow(na.omit(COMBO_GI_Chg)) # 1227
+
+nrow(COMBO_NO_GI_Chg) # 1053, 3759 for 1/8 distance from GI
+nrow(na.omit(COMBO_NO_GI_Chg)) # 1053, 3759 for 1/8 distance from GI
+
+# replace all non-finite values with NA
+COMBO_GI_Chg$Perc_Change[!is.finite(COMBO_GI_Chg$Perc_Change)] <- NA
+COMBO_GI_Chg2 = na.omit(COMBO_GI_Chg)
+summary(COMBO_GI_Chg2$Perc_Change)
+
+# replace all non-finite values with NA
+COMBO_NO_GI_Chg$Perc_Change[!is.finite(COMBO_NO_GI_Chg$Perc_Change)] <- NA
+COMBO_NO_GI_Chg2 = na.omit(COMBO_NO_GI_Chg)
+summary(COMBO_NO_GI_Chg2$Perc_Change)
+
+mean(COMBO_GI_Chg$Perc_Change,na.rm=T) # 90.03109
+mean(COMBO_NO_GI_Chg2$Perc_Change,na.rm=T) # 128.312, or 121.2675 (w/ all data), 11.3096 with 4th sep
+# This indicates that there is already a higher increase in property value for the control sites.
+# Thus need to only compare sites of equal predictor variables (equal forest, etc. )
+
+
+#####
+```
+
+
+# 7. SUBSET DATA FOR CLUSTER ANALYSIS
+```{r}
+
+##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>
+# SUBSETTING DATA
+##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>##<>
+
+nrow(COMBO2000) # 2386, 5517 1/8 Sep
+
+GI.TYPE <- COMBO2000$TYPE # this is making a vector of GI.Condition
+
+# this creates row names that can then be used as point labels instead of default numbers
+rownames(COMBO2000) = make.names(GI.TYPE, unique=TRUE) # this is making the GI.Condition vector as "unique" row names
+#rownames(hydro.Overall) = make.names(GI.Condition, unique=TRUE) # this is making the GI.Condition vector as "unique" row names
+
+# Subsetting out just these columns:
+keeps <- c("IncomePerCapita", "Pop_Density", "PercBelowPoverty", "Perc_White", "YearBuilt","Developed", "Forest","Shrubland","Agriculture","Water","Barren.Land","percent.ISC","Dist_City_Center","Card_Number","Dist_parks","Dist_roads","Dist_water")
+sub = COMBO2000[keeps]
+sub = na.omit(sub)
+
+
+```
+
+#******************
+
+# Cluster Analysis 
+
+# 1. Cluster Analysis (Choose number of clusters and plot them)
+```{r}
+
+# Cluster Plot against 1st 2 principal components
+library(cluster)
+
+# K-Means Clustering with 4 clusters
+fit <- kmeans(sub, 200) # 
+
+# vary parameters for most readable graph
+clusplot(sub, fit$cluster, color=TRUE, shade=TRUE,
+         labels=3, lines=0, main = "Name")
+
+###
+
+```
+
+
+# 2. Extract out similar clusters  
+```{r Similar Clusters}
+
+# Subsetting out just these columns:
+# keeps <- c("PropertyValue", "IncomePerCapita", "Pop_Density", "PercBelowPoverty", "Perc_White", "YearBuilt",
+#            "Developed", "Forest","Shrubland","Agriculture","percent.ISC","TYPE")
+# sub2 = COMBO2000[keeps]
+# sub2 = na.omit(sub2)
+
+nrow(sub) # 2253, 5387 for 1/8 sep
+# nrow(sub2)
+
+# get cluster means
+sub_ag = aggregate(sub,by=list(fit$cluster),FUN=mean)
+
+COMBO2000_sub = COMBO2000[,c("UniqID", "IncomePerCapita", "Pop_Density", "PercBelowPoverty", "Perc_White", "YearBuilt","Developed", "Forest","Shrubland","Agriculture","Water","Barren.Land","percent.ISC",
+"Dist_City_Center","Card_Number","Dist_parks","Dist_roads","Dist_water","TYPE")]
+COMBO2000_sub = na.omit(COMBO2000_sub)
+nrow(COMBO2000_sub) # 2253, 5141 for 1/8 sep
+
+# append cluster assignment
+sub_fit <- data.frame(COMBO2000_sub, fit$cluster) 
+
+nrow(sub_ag) # 12
+nrow(sub_fit) # 2253, 5387 for 1/8 sep
+
+
+```
+
+
+# 3. Other Clustering Method
+```{r}
+
+# Ward Hierarchical Clustering
+# d <- dist(sub, method = "euclidean") # distance matrix
+# fit <- hclust(d, method="ward")
+# plot(fit) # display dendogram
+# groups <- cutree(fit, k=90) # cut tree into K clusters
+# # draw dendogram with red borders around the K clusters
+# rect.hclust(fit, k=90, border="red") 
+# 
+# # get cluster means
+# sub_ag = aggregate(sub,by=list(fit$cluster),FUN=mean)
+# 
+# # append cluster assignment
+# sub_fit <- data.frame(COMBO2000_sub, groups) 
+
+
+
+```
+
+
+
+
+# 4. Only Keep Clusters in same quadrant (+/- 1 quadrant)
+```{r}
+# Find the most frequent Cardinal Number for each cluster
+
+# Return most frequent value for each group 
+
+out <- sub_fit %>% dplyr::group_by(fit.cluster) %>% summarize (Freq_Card_Number =names(which.max(table(Card_Number)))) 
+
+# Add in Freq_Card_Numb
+sub_fit = merge(sub_fit,out,by="fit.cluster",all.x=T)
+
+#Find Card_Number # +/- 1 from Freq_Card_Numb
+sub_fit$Freq_Card_Numb = as.numeric(sub_fit$Freq_Card_Numb)
+sub_fit$Card_Diff = sub_fit$Card_Number-sub_fit$Freq_Card_Numb
+
+# Select out only card_numbers # +/- 1 from Freq_Card_Numb
+sub_fit2 = sub_fit[sub_fit$Card_Diff >= -1 & sub_fit$Card_Diff <= 1,]
+
+nrow(sub_fit) # 2247, 5387 for 1/8 sep
+nrow(sub_fit2) # 1621, 4539 for 1/8 sep
+
+
+######
+```
+
+
+
+
+
+# 5. Append % Change in Property Value 
+```{r}
+
+COMBO_Change = rbind(COMBO_GI_Chg,COMBO_NO_GI_Chg)
+
+nrow(COMBO_GI_Chg) # 1227
+nrow(COMBO_NO_GI_Chg) # 1053, 3759 for 1/8 sep
+nrow(COMBO_Change) # 4986 for 1/8, this is rbind of COMBO_GI_Chg & COMBO_No_GI_Chg
+nrow(sub_fit2) #  1621, 4539 for 1/8 sep
+
+COMBO_fit = merge(sub_fit2,COMBO_Change,by="UniqID",all.x=T)
+nrow(COMBO_fit) # 1621, 4539 for 1/8 sep
+
+# Now Compare the property values in each group.  
+# library(dplyr)
+# library(broom)
+# mean_PropVal = COMBO_fit %>%
+#   group_by(fit.cluster,TYPE) %>%
+#   summarise(mean = mean(PropertyValue))
+
+# Now Compare the % change in property value & other variables in each group.
+class(COMBO_fit)
+Chg_PropVal = COMBO_fit %>%
+  dplyr::group_by(fit.cluster,TYPE) %>%
+  summarise(mean_Perc_Change_Prop = mean(Perc_Change),
+            mean_IncomePerCapita = mean(IncomePerCapita),
+            mean_Pop_Density = mean(Pop_Density),
+            mean_PercBelowPoverty = mean(PercBelowPoverty),
+            mean_Perc_White = mean(Perc_White),
+            mean_YearBuilt = mean(YearBuilt),
+            mean_Developed = mean(Developed),
+            mean_Forest = mean(Forest),
+            mean_Agriculture = mean(Agriculture),
+            mean_Water = mean(Water),
+            mean_percent.ISC = mean(percent.ISC),
+            mean_Dist_City_Center = mean(Dist_City_Center),
+            mean_Card_Number = mean(Card_Number),
+            mean_Dist_parks = mean(Dist_parks),
+            mean_Dist_roads = mean(Dist_roads),
+            mean_Dist_water = mean(Dist_water))
+
+#View(Chg_PropVal)
+
+
+nrow(Chg_PropVal) # 131, 196 fro 1/8
+length(Chg_PropVal) # 18
+
+# Remove any mean_Perc_Change_Prop that has an NA
+Chg_PropVal = Chg_PropVal[complete.cases(Chg_PropVal[,c("mean_Perc_Change_Prop")]),] 
+
+
+# Remove non duplicates
+allDup <- function (value) { duplicated(value) | duplicated(value, fromLast = TRUE) }
+
+#test = as.data.frame(allDup(mean_PropVal$fit.cluster))
+#names(test)[1] = "cond"
+# mean_PropVal$Dup = test$cond
+# mean_PropVal2 = mean_PropVal[mean_PropVal$Dup == "TRUE",]
+
+test = as.data.frame(allDup(Chg_PropVal$fit.cluster))
+names(test)[1] = "cond"
+Chg_PropVal$Dup = test$cond
+Chg_PropVal2 = Chg_PropVal[Chg_PropVal$Dup == "TRUE",]
+Chg_PropVal2 = as.data.frame(Chg_PropVal2)
+
+
+###
+```
+
+
+# 6. Find % diff between TREATMENT and CONTROL Values
+* Keep only TREATMENT & CONTROL PAIRS if all variables have < 5% diff
+```{r }
+
+
+cluster_means = Chg_PropVal2 %>% 
+  dplyr::group_by(fit.cluster) %>% 
+  summarize(Diff1 = mean_IncomePerCapita[2] - mean_IncomePerCapita[1],
+            Perc_Diff_Income = 100*Diff1/mean_IncomePerCapita[1],
+              
+            Diff2 = mean_Pop_Density[2] - mean_Pop_Density[1],
+            Perc_Diff_Pop = 100*Diff2/mean_Pop_Density[1],
+                
+            Diff3 = mean_PercBelowPoverty[2] - mean_PercBelowPoverty[1],
+            Perc_Diff_Poverty = 100*Diff3/mean_PercBelowPoverty[1],
+                  
+            Diff4 = mean_Perc_White[2] - mean_Perc_White[1],
+            Perc_Diff_white = 100*Diff4/mean_Perc_White[1],
+                    
+            Diff5 = mean_YearBuilt[2] - mean_YearBuilt[1],
+            Perc_Diff_YearBuilt = 100*Diff5/mean_YearBuilt[1],
+                     
+            Diff6 = mean_Developed[2] - mean_Developed[1],
+            Perc_Diff_Developed = 100*Diff6/mean_Developed[1],
+                       
+            Diff7 = mean_Forest[2] - mean_Forest[1],
+            Perc_Diff_Forest = 100*Diff7/mean_Forest[1],
+                         
+            Diff8 = mean_Agriculture[2] - mean_Agriculture[1],
+            Perc_Diff_Agric = 100*Diff8/mean_Agriculture[1],
+            
+            Diff9 = mean_percent.ISC[2] - mean_percent.ISC[1],
+            Perc_Diff_ISC = 100*Diff9/mean_percent.ISC[1],
+            
+            Diff10 = mean_Dist_City_Center[2] - mean_Dist_City_Center[1],
+            Perc_Diff_Dist = 100*Diff10/mean_Dist_City_Center[1],
+            
+            Diff11 = mean_Card_Number[2] - mean_Card_Number[1],
+            Perc_Diff_Card_Number = 100*Diff11/mean_Card_Number[1],
+            
+            Diff12 = mean_Dist_parks[2] - mean_Dist_parks[1],
+            Perc_Diff_Dist_parks = 100*Diff12/mean_Dist_parks[1],
+            
+            Diff13 = mean_Dist_roads[2] - mean_Dist_roads[1],
+            Perc_Diff_Dist_roads = 100*Diff13/mean_Dist_roads[1],
+            
+            Diff14 = mean_Dist_water[2] - mean_Dist_water[1],
+            Perc_Diff_Dist_water = 100*Diff14/mean_Dist_water[1])
+
+
+# This is the % diff between TREATMENT AND CONTROL TO SET
+Threshold = 100
+
+cluster_means$diff_Income = ifelse(abs(cluster_means$Perc_Diff_Income)<Threshold,0,1)
+cluster_means$diff_Pop = ifelse(abs(cluster_means$Perc_Diff_Pop)<Threshold,0,1)
+cluster_means$diff_Pov = ifelse(abs(cluster_means$Perc_Diff_Poverty)<Threshold,0,1)
+cluster_means$diff_white = ifelse(abs(cluster_means$Perc_Diff_white)<Threshold,0,1)
+cluster_means$diff_Built = ifelse(abs(cluster_means$Perc_Diff_YearBuilt)<Threshold,0,1)
+cluster_means$diff_Devel = ifelse(abs(cluster_means$Perc_Diff_Developed)<Threshold,0,1)
+cluster_means$diff_Forest = ifelse(abs(cluster_means$Perc_Diff_Forest)<Threshold,0,1)
+cluster_means$diff_Ag = ifelse(abs(cluster_means$Perc_Diff_Agric)<Threshold,0,1)
+cluster_means$diff_ISC = ifelse(abs(cluster_means$Perc_Diff_ISC)<Threshold,0,1)
+cluster_means$diff_Dist = ifelse(abs(cluster_means$Perc_Diff_Dist)<Threshold,0,1)
+cluster_means$diff_Card_N = ifelse(abs(cluster_means$Perc_Diff_Card_Number)<Threshold,0,1)
+cluster_means$diff_Dist_parks = ifelse(abs(cluster_means$Perc_Diff_Dist_parks)<Threshold,0,1)
+cluster_means$diff_Dist_roads = ifelse(abs(cluster_means$Perc_Diff_Dist_roads)<Threshold,0,1)
+cluster_means$diff_Dist_water = ifelse(abs(cluster_means$Perc_Diff_Dist_water)<Threshold,0,1)
+
+
+# Find how many variables are > the % Diff threshold
+cluster_means$diff_all = 0
+
+for (i in 1:nrow(cluster_means)) {
+cluster_means$diff_all[i] = sum(cluster_means$diff_Income[i],cluster_means$diff_Pop[i],cluster_means$diff_Pov[i],cluster_means$diff_white[i],
+                             cluster_means$diff_Built[i],cluster_means$diff_Devel[i],cluster_means$diff_Forest[i],cluster_means$diff_Ag[i],
+                             cluster_means$diff_ISC[i],cluster_means$diff_Dist[i],cluster_means$diff_Card_N[i],cluster_means$diff_Dist_parks[i],
+                             cluster_means$diff_Dist_roads[i],cluster_means$diff_Dist_water[i],na.rm=T)
+}
+
+#View(cluster_means)
+
+
+#####################################################################################
+# Select out only Similar Clusters to Compare
+#####################################################################################
+# Choose based on cluster_means having smallest diff_all
+cluster_means$FIT.CLUSTER = cluster_means$fit.cluster
+
+cluster_keeps = cluster_means[cluster_means$diff_all <= 4,]
+
+# Keep Cluster 17
+
+cluster_keeps = na.omit(cluster_keeps)
+
+selectedRows = (Chg_PropVal2$fit.cluster %in% cluster_keeps$fit.cluster)
+Chg_PropVal3 = Chg_PropVal2[selectedRows,] # this is the point buffer that is not near SWM
+
+
+#View(Chg_PropVal3)
+
+####
+```
+
+
+
+
+# 7. Comparing Property Value (between TREATMENT and CONTROL)
+
+```{r}
+
+# Subsetting out PropertyValue
+keeps <- c("PropertyValue","IncomePerCapita", "Pop_Density", "PercBelowPoverty", "Perc_White", "YearBuilt","Developed", "Forest","Shrubland","Agriculture","Water","Barren.Land","percent.ISC","Dist_City_Center","Card_Number","Dist_parks","Dist_roads","Dist_water")
+Prop = COMBO2000[keeps]
+Prop = na.omit(sub) 
+nrow(Prop) # 5387
+
+# Get Cluster
+fit2 <- kmeans(Prop, 120) # 
+
+# get cluster means
+sub_ag2 = aggregate(Prop,by=list(fit2$cluster),FUN=mean)
+
+
+COMBO2000_sub = COMBO2000[,c("UniqID", "PropertyValue","IncomePerCapita", "Pop_Density", "PercBelowPoverty", "Perc_White", "YearBuilt","Developed", "Forest","Shrubland","Agriculture","Water","Barren.Land","percent.ISC",
+"Dist_City_Center","Card_Number","Dist_parks","Dist_roads","Dist_water","TYPE")]
+COMBO2000_sub = na.omit(COMBO2000_sub)
+nrow(COMBO2000_sub) # 5141
+
+
+
+# append cluster assignment
+sub_fit2 <- data.frame(Prop, fit$cluster) 
+
+#COMBO_fit = merge(sub_fit2,Prop,by="UniqID",all.x=T)
+
+
+Prop = COMBO2000[,c("UniqID", "PropertyValue")]
+nrow(COMBO_fit)
+nrow(Prop)
+
+COMBO_fit_prop = merge(COMBO_fit,Prop,by="UniqID",all.x=T)
+
+PropVal_fit = COMBO_fit_prop %>%
+  dplyr::group_by(fit.cluster,TYPE) %>%
+  summarise(mean_PropertyValue = mean(PropertyValue))
+
+#*****************************************************************
+# Remove clusters based on Chg_PropVal2 and Chg_PropVal3
+
+PropVal_fit2 <- 
+  PropVal_fit[PropVal_fit$fit.cluster %in% Chg_PropVal2$fit.cluster, ]
+
+
+PropVal_fit3 <- 
+  PropVal_fit[PropVal_fit$fit.cluster %in% Chg_PropVal3$fit.cluster, ]
+
+
+
+###
+
+```
+
+
+
+#*****************************
+# Box Plots to compare TREATMENT vs CONTROL
+```{r}
+
+# Plotting all data
+boxplot(mean_PropertyValue~TYPE, data=PropVal_fit2,ylab="Property Value")
+boxplot(mean_Perc_Change_Prop~TYPE, data=Chg_PropVal2,ylab="% Change in Property Value")
+
+# Selecting out only similar clusters to compare (Plotting only the sites with least diff between TREATMENT AND CONTROL Variable Means)
+boxplot(mean_PropertyValue~TYPE, data=PropVal_fit3,ylab="Property Value")
+boxplot(mean_Perc_Change_Prop~TYPE, data=Chg_PropVal3,ylab="% Change in Property Value")
+
+###
+
+```
+
+# t-tests to compare TREATMENT vs CONTROL
+```{r}
+
+# Combine the % Change Data
+
+# All sites
+t.test(mean_Perc_Change_Prop~TYPE, data=Chg_PropVal2)
+
+# Comparing only similar clusters
+t.test(mean_Perc_Change_Prop~TYPE, data=Chg_PropVal3)
+
+# 8th Sep Chg_PropVal2: p = 0.06968, 120 clusters
+# 8th Sep Chg_PropVal3: p = 0.001508, 120 clusters
+
+# 8th Sep Chg_PropVal2: p = 0.03906, 150 clusters
+# 8th Sep Chg_PropVal3: p = 1.476e-05, 150 clusters
+
+# 8th Sep Chg_PropVal2: p = 0.05639, 200 clusters
+# 8th Sep Chg_PropVal3: p = 0.0005042, 200 clusters
+
+# 4th Sep Chg_PropVal2: p = 0.4399, 120 Clusters
+# 4th Sep Chg_PropVal3: p = 0.5875, 120 Clusters
+
+# half Sep Chg_PropVal2: p = 2.974e-05
+# half Sep Chg_PropVal3: p = 4.522e-07
+
+
+```
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+# Number of clusters
+```{r}
+# https://stackoverflow.com/questions/15376075/cluster-analysis-in-r-determine-the-optimal-number-of-clusters
+
+# One. Look for a bend or elbow in the sum of squared error (SSE) scree plot. See http://www.statmethods.net/advstats/cluster.html & http://www.mattpeeples.net/kmeans.html for more. The location of the elbow in the resulting plot suggests a suitable number of clusters for the kmeans:
+d <- sub
+mydata <- d
+k.max <- 150 # Maximal number of clusters
+wss <- (nrow(mydata)-1)*sum(apply(mydata,2,var))
+  for (i in 2:k.max) wss[i] <- sum(kmeans(mydata,
+                                       centers=i)$withinss)
+plot(1:k.max, wss, type="b", xlab="Number of Clusters",
+     ylab="Within groups sum of squares")
+
+# Two. You can do partitioning around medoids to estimate the number of clusters using the pamk function in the fpc package.
+#****** TAKES TOO LONG *******
+library(fpc)
+d <- sub
+pamk.best <- pamk(d)
+cat("number of clusters estimated by optimum average silhouette width:", pamk.best$nc, "\n")
+plot(pam(d, pamk.best$nc))
+
+# Three. Calinsky criterion: Another approach to diagnosing how many clusters suit the data. In this case we try 1 to 10 groups.
+#****** TAKES TOO LONG *******
+require(vegan)
+fit <- cascadeKM(scale(d, center = TRUE,  scale = TRUE), 1, 10, iter = 1000)
+plot(fit, sortg = TRUE, grpmts.plot = TRUE)
+calinski.best <- as.numeric(which.max(fit$results[2,]))
+cat("Calinski criterion optimal number of clusters:", calinski.best, "\n")
+# 5 clusters!
+
+# Four. Determine the optimal model and number of clusters according to the Bayesian Information Criterion for expectation-maximization, initialized by hierarchical clustering for parameterized Gaussian mixture models
+# See http://www.jstatsoft.org/v18/i06/paper
+# http://www.stat.washington.edu/research/reports/2006/tr504.pdf
+
+library(mclust)
+# Run the function to see how many clusters
+# it finds to be optimal, set it to search for
+# at least 1 model and up 20.
+d_clust <- Mclust(as.matrix(d), G=1:20)
+m.best <- dim(d_clust$z)[2]
+cat("model-based optimal number of clusters:", m.best, "\n")
+# 4 clusters
+plot(d_clust)
+
+# Six. Gap Statistic for Estimating the Number of Clusters. See also some code for a nice graphical output. Trying 2-10 clusters here:
+# ****** Doesn't SEEM to WORK*******
+library(cluster)
+clusGap(d, kmeans, 10, B = 100, verbose = interactive())
+
+# Eight. The NbClust package provides 30 indices to determine the number of clusters in a dataset.
+
+# 8a
+library(NbClust)
+nb <- NbClust(d, diss="NULL", distance = "euclidean", 
+        min.nc=2, max.nc=15, method = "kmeans", 
+        index = "alllong", alphaBeale = 0.1)
+hist(nb$Best.nc[1,], breaks = max(na.omit(nb$Best.nc[1,])))
+# Looks like 3 is the most frequently determined number of clusters
+# and curiously, four clusters is not in the output at all!
+
+# 8b
+d_dist <- dist(as.matrix(d))   # find distance matrix 
+plot(hclust(d_dist))  
+
+# 8c
+# ****** CRASHED R **********
+# a Bayesian clustering method, good for high-dimension data, more details:
+# http://vahid.probstat.ca/paper/2012-bclust.pdf
+library(bclust)
+d <- sub
+x <- as.matrix(d)
+d.bclus <- bclust(x, transformed.par = c(0, -50, log(16), 0, 0, 0))
+viplot(imp(d.bclus)$var); plot(d.bclus); ditplot(d.bclus)
+dptplot(d.bclus, scale = 20, horizbar.plot = TRUE,varimp = imp(d.bclus)$var, horizbar.distance = 0, dendrogram.lwd = 2)
+# I just include the dendrogram here
+
+# 8d
+library(pvclust)
+library(MASS)
+data(Boston)
+boston.pv <- pvclust(Boston)
+plot(boston.pv)
+
+
+```
+
+
+# Determine Number of Clusters
+```{r Determine Number of Clusters}
+
+# http://www.sthda.com/english/wiki/determining-the-optimal-number-of-clusters-3-must-known-methods-unsupervised-machine-learning
+
+#*************************************
+# Elbow method for k-means clustering
+# The total within-cluster sum of square (wss) measures the compactness of the clustering and we want it to be as small as possible.
+#*************************************
+
+# set.seed(123)
+# Compute and plot wss for k = 2 to k = 15
+k.max <- 200 # Maximal number of clusters
+data <- sub
+wss <- sapply(1:k.max, 
+              function(k){kmeans(data, k, nstart=20 )$tot.withinss})
+plot(1:k.max, wss,
+     type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K",
+     ylab="Total within-clusters sum of squares")
+abline(v = 30, lty =2)
+
+# looks like flattens out after ~120
+
+library(factoextra)
+fviz_nbclust(sub, kmeans, method = "wss") +
+  geom_vline(xintercept = 8, linetype = 2) # the intercept is manually chosen
+
+# looks like >10 clusters are needed
+
+#*************************************
+# Elbow method for hierarchical clustering
+#*************************************
+fviz_nbclust(sub, hcut, method = "wss") +
+  geom_vline(xintercept = 8, linetype = 2) # the intercept is manually chosen
+
+# looks like >10 clusters are needed
+
+#*************************************
+# Average silhouette method
+# A high average silhouette width indicates a good clustering.
+#*************************************
+
+library(cluster)
+k.max <- 200
+data <- sub
+sil <- rep(0, k.max)
+# Compute the average silhouette width for 
+# k = 2 to k = 15
+for(i in 2:k.max){
+  km.res <- kmeans(data, centers = i, nstart = 25)
+  ss <- silhouette(km.res$cluster, dist(data))
+  sil[i] <- mean(ss[, 3])
+}
+# Plot the  average silhouette width
+plot(1:k.max, sil, type = "b", pch = 19, 
+     frame = FALSE, xlab = "Number of clusters k")
+abline(v = which.max(sil), lty = 2)
+
+# **Looks like about 150 or more cluster may be best
+
+require(cluster)
+fviz_nbclust(sub, kmeans, method = "silhouette")
+
+# looks like ~60 clusters may be better
+
+
+#**************************************************
+#Average silhouette method for hierarchical clustering
+
+require(cluster)
+fviz_nbclust(sub, hcut, method = "silhouette",
+             hc_method = "complete")
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+# The disadvantage of elbow and average silhouette methods is that, they measure a global clustering characteristic only. 
+# A more sophisticated method is to use the gap statistic which provides a statistical procedure to formalize the elbow/silhouette heuristic in order to estimate the optimal number of clusters.
+
+#*************************************************************************
+# Gap statistic method
+
+#The estimate of the optimal clusters k^ will be value that maximize Gapn(k) (i.e, that yields the largest gap statistic). 
+# This means that the clustering structure is far away from the uniform distribution of points.
+
+# Gap statistic for k-means clustering
+library(cluster)
+set.seed(123)
+gap_stat <- clusGap(sub, FUN = kmeans, nstart = 25,
+                    K.max = 200, B = 10) # B: the number of Monte Carlo ("bootstrap") samples. B= 500 recommended
+
+# Print the result
+print(gap_stat, method = "firstmax")
+
+
+# Use factoextra
+fviz_gap_stat(gap_stat)
+# looks like starts to level off around 90 clusters
+
+#**************************************************************
+# Gap statistic for hierarchical clustering
+
+set.seed(123) # this makes it reproducible 
+gap_stat <- clusGap(sub, FUN = hcut, K.max = 100, B = 10) # B: the number of Monte Carlo ("bootstrap") samples, B=500 recommended
+
+# Plot gap statistic
+fviz_gap_stat(gap_stat)
+
+# Keeps rising, but almost leveling off around 80-90
+
+#################################################################################
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+
+```
+
+
+
+
